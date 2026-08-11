@@ -1,3 +1,4 @@
+import dns from "dns";
 import nodemailer from "nodemailer";
 import Email from "../models/Email.js";
 
@@ -22,10 +23,12 @@ export const sendBulkMail = async (req, res) => {
     }
 
     // -----------------------------
-    // 2. Create Gmail transporter
+    // 2. Resolve Gmail SMTP IPv4 address and create transporter
     // -----------------------------
+    const [smtpAddress] = await dns.promises.resolve4("smtp.gmail.com");
+
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
+      host: smtpAddress,
       port: 465,
       secure: true,
       auth: {
