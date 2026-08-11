@@ -5,64 +5,116 @@ export const sendBulkMail = async (req, res) => {
   try {
     const { subject, body, recipients } = req.body;
 
-    // Basic validation
-    if (!subject || !body || !recipients || recipients.length === 0) {
+    // -----------------------------
+    // 1. Validate request
+    // -----------------------------
+    if (
+      !subject ||
+      !body ||
+      !recipients ||
+      !Array.isArray(recipients) ||
+      recipients.length === 0
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Subject, body and recipients are required"
+        message: "Subject, body and recipients are required",
       });
     }
 
-    // Create email transporter
+    // -----------------------------
+    // 2. Create Gmail transporter
+    // -----------------------------
     const transporter = nodemailer.createTransport({
       service: "gmail",
+
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-      }
+        pass: process.env.EMAIL_PASS,
+      },
+
+      // Prevent Render from waiting for minutes
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
 
-    // Send email
-    await transporter.sendMail({
+    // -----------------------------
+    // 3. Verify SMTP connection
+    // -----------------------------
+    await transporter.verify();
+
+    console.log("SMTP connection verified successfully");
+
+    // -----------------------------
+    // 4. Send email
+    // -----------------------------
+    const mailResult = await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: recipients.join(","),
       subject: subject,
-      text: body
+      text: body,
     });
 
-    // Save successful email record
+    console.log("Email sent successfully:", mailResult.messageId);
+
+    // -----------------------------
+    // 5. Save successful email
+    // -----------------------------
     const emailRecord = await Email.create({
       subject,
       body,
       recipients,
-      status: "sent"
+      status: "sent",
     });
 
-    res.status(200).json({
+    // -----------------------------
+    // 6. Send success response
+    // -----------------------------
+    return res.status(200).json({
       success: true,
       message: "Bulk email sent successfully",
-      email: emailRecord
+      email: emailRecord,
     });
   } catch (error) {
-    console.error("Bulk mail error:", error.message);
+    // -----------------------------
+    // 7. Log actual error
+    // -----------------------------
+    console.error("=================================");
+    console.error("BULK MAIL ERROR");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("Command:", error.command);
+    console.error("Response:", error.response);
+    console.error("=================================");
 
-    // Try to save failed record
+    // -----------------------------
+    // 8. Try to save failed record
+    // -----------------------------
     try {
       const { subject, body, recipients } = req.body;
 
       await Email.create({
         subject: subject || "",
         body: body || "",
-        recipients: recipients || [],
-        status: "failed"
+        recipients: Array.isArray(recipients) ? recipients : [],
+        status: "failed",
       });
+
+      console.log("Failed email record saved to MongoDB");
     } catch (dbError) {
-      console.error("Failed to save email record:", dbError.message);
+      console.error(
+        "Failed to save email record:",
+        dbError.message
+      );
     }
 
-    res.status(500).json({
+    // -----------------------------
+    // 9. Send error response
+    // -----------------------------
+    return res.status(500).json({
       success: false,
-      message: "Failed to send bulk email"
+      message: "Failed to send bulk email",
+      error: error.message,
     });
   }
 };
