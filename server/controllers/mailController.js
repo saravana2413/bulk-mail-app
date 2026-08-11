@@ -2,6 +2,91 @@ import dns from "dns";
 import nodemailer from "nodemailer";
 import Email from "../models/Email.js";
 
+const createGmailTransporter = async () => {
+  const [smtpAddress] = await dns.promises.resolve4("smtp.gmail.com");
+
+  const transporter465 = nodemailer.createTransport({
+    host: smtpAddress,
+    port: 465,
+    secure: true,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+    family: 4,
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 15000,
+  });
+
+  try {
+    await transporter465.verify();
+    return transporter465;
+  } catch (error) {
+    console.warn("Gmail 465 verify failed, trying port 587:", error.message);
+  }
+
+  const transporter587 = nodemailer.createTransport({
+    host: smtpAddress,
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+    family: 4,
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 15000,
+  });
+
+  await transporter587.verify();
+  return transporter587;
+};
+
+const sendViaSendGrid = async ({ subject, body, recipients }) => {
+  const apiKey = process.env.SENDGRID_API_KEY;
+  const fromEmail = process.env.SENDGRID_FROM;
+
+  if (!apiKey || !fromEmail) {
+    throw new Error("SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM.");
+  }
+
+  const payload = {
+    personalizations: [
+      {
+        to: recipients.map((email) => ({ email })),
+      },
+    ],
+    from: { email: fromEmail },
+    subject,
+    content: [{ type: "text/plain", value: body }],
+  };
+
+  const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`SendGrid error ${response.status}: ${text}`);
+  }
+
+  return { messageId: `sendgrid-${Date.now()}` };
+};
+
 export const sendBulkMail = async (req, res) => {
   try {
     const { subject, body, recipients } = req.body;
@@ -23,45 +108,32 @@ export const sendBulkMail = async (req, res) => {
     }
 
     // -----------------------------
-    // 2. Resolve Gmail SMTP IPv4 address and create transporter
+    // 2. Try Gmail SMTP, fall back to SendGrid if SMTP is blocked
     // -----------------------------
-    const [smtpAddress] = await dns.promises.resolve4("smtp.gmail.com");
+    let mailResult;
 
-    const transporter = nodemailer.createTransport({
-      host: smtpAddress,
-      port: 465,
-      secure: true,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-      family: 4,
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
-    });
+    try {
+      const transporter = await createGmailTransporter();
+      console.log("Using Gmail SMTP transporter");
 
-    // -----------------------------
-    // 3. Verify SMTP connection
-    // -----------------------------
-    await transporter.verify();
+      mailResult = await transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: recipients.join(","),
+        subject: subject,
+        text: body,
+      });
 
-    console.log("SMTP connection verified successfully");
+      console.log("Email sent successfully via Gmail SMTP:", mailResult.messageId);
+    } catch (smtpError) {
+      console.warn("Gmail SMTP failed:", smtpError.message);
 
-    // -----------------------------
-    // 4. Send email
-    // -----------------------------
-    const mailResult = await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: recipients.join(","),
-      subject: subject,
-      text: body,
-    });
-
-    console.log("Email sent successfully:", mailResult.messageId);
+      if (process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM) {
+        console.log("Falling back to SendGrid");
+        mailResult = await sendViaSendGrid({ subject, body, recipients });
+      } else {
+        throw smtpError;
+      }
+    }
 
     // -----------------------------
     // 5. Save successful email
