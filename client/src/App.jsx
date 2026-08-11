@@ -26,8 +26,13 @@ function App() {
     try {
       setLoading(true);
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/mail/send`,
-        {
+      const apiUrl =
+        import.meta.env.VITE_API_URL ||
+        (import.meta.env.MODE === "development"
+          ? "http://localhost:5000"
+          : "https://bulk-mail-app-shy4.onrender.com");
+
+      const response = await fetch(`${apiUrl}/api/mail/send`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
